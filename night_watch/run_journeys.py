@@ -1,0 +1,1 @@
+"""Scheduled accessibility journey checks."""
