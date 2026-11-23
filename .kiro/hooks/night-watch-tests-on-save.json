@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Night Watch tests on save",
+      "trigger": "PostFileSave",
+      "description": "Run night_watch tests when a .py file in night_watch/ is saved",
+      "matcher": "night_watch[\\\\/].*\\.py$",
+      "action": {
+        "type": "command",
+        "command": ".venv\\Scripts\\python -m pytest -q night_watch/tests"
+      }
+    }
+  ]
+}
