@@ -154,7 +154,7 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
     - Include the verdict-is-final, no-edit, no-invention and "scripted mode" and no-WCAG-claims rules
     - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.9_
 
-  - [ ]* 9.5 Write smoke tests for the app files
+  - [x] 9.5 Write smoke tests for the app files
     - File: `night_watch/tests/test_app_files.py`
     - `app.json` parses and has only the allowed top-level fields with the required values
     - `agents` is a one-item list whose path is `report_agent/agent.json`. That file has only `name`, `model`, `description`, `prompt` and `tools`, with model `auto` and `prompt` equal to the text of `prompt.md`

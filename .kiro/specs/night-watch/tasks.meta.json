@@ -502,6 +502,18 @@
         "chatSessionId": "sess_f63dbd06-3524-4e2d-9430-f035601b6d22",
         "timestamp": 1795455153813
       }
+    ],
+    "9.5 Write smoke tests for the app files": [
+      {
+        "executionId": "5b1e81f4-45c5-452b-b665-6820fbb726b2",
+        "chatSessionId": "sess_77d53ad4-234d-4e43-92e2-a93d79d34ec8",
+        "timestamp": 1795455413738
+      },
+      {
+        "executionId": "5b1e81f4-45c5-452b-b665-6820fbb726b2",
+        "chatSessionId": "sess_77d53ad4-234d-4e43-92e2-a93d79d34ec8",
+        "timestamp": 1795455464606
+      }
     ]
   }
 }
