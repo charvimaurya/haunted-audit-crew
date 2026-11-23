@@ -1,0 +1,6 @@
+{
+  "name": "report_agent",
+  "description": "Reports the nightly Night Watch result of the Send Payment journey in plain English (scripted mode, synthetic data).",
+  "model": "auto",
+  "instructions": "file://./prompt.md"
+}

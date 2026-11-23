@@ -1,1 +1,25 @@
-{}
+{
+  "name": "night-watch",
+  "version": "0.1.0",
+  "displayName": "Night Watch",
+  "description": "Re-runs the Send Payment journey every night in scripted mode. The broken variant must be blocked and the fixed variant must pass. If the fixed variant fails, it reports a returning ghost.",
+  "author": "Haunted Audit team",
+  "license": "MIT",
+  "agents": ["report_agent/agent.json"],
+  "skills": ["skills/night-watch-report"],
+  "mcpServers": {
+    "night-watch": {
+      "command": "python",
+      "args": ["night_watch/mcp_server.py"],
+      "env": {}
+    }
+  },
+  "crons": [
+    {
+      "name": "night-watch-nightly",
+      "cron_expr": "0 2 * * *",
+      "message": "Call the run_night_watch tool exactly once. If the outcome is all_as_expected, reply with exactly one line of plain text and take no further action. If the outcome is returning_ghost or could_not_check, follow night_watch/report_agent/prompt.md.",
+      "agent": "report_agent"
+    }
+  ]
+}

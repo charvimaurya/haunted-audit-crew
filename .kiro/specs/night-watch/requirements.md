@@ -1,386 +1,237 @@
-# Night Watch — Requirements
+# Requirements Document
 
-**Spec version:** 1.0  
-**Steering:** `.kiro/steering/product-rules.md`  
-**Companion specs:** `.kiro/specs/haunted-audit-kiro-integration/`
+## Introduction
 
----
+Night Watch is a Kiro Crew app for Haunted Audit. Every night at 02:00 it re-runs the Send Payment journey through the Haunted Audit API, in scripted mode only. The broken variant must come back BLOCKED. The fixed variant must come back PASSED. If the fixed variant is not PASSED, Night Watch reports a "returning ghost" in plain English. Results go to dated files under `reports/`, and the process exit code tells the scheduler what happened.
 
-## Conventions
+This version replaces an earlier draft. These items from the earlier draft are out of scope and are not specified here: SQLite evidence log, `GET /night-watch/history` backend endpoint, Reports page or dashboard UI, `llm` mode, Docker documentation, and any change to the haunted-audit repository.
 
-Acceptance criteria use EARS notation:
+Facts taken from `docs/api-contract.md`:
 
-- **WHEN** \<trigger\> **THE SYSTEM SHALL** \<behaviour\>
-- **WHILE** \<state\> **THE SYSTEM SHALL** \<behaviour\>
-- **IF** \<condition\> **THEN THE SYSTEM SHALL** \<behaviour\>
-- **THE SYSTEM SHALL** \<unconditional behaviour\>
+- `POST /runs` with `{"variant": ..., "mode": "scripted"}` returns `202` and a `run_id`.
+- `GET /runs/{run_id}` returns `status` (`running`, `complete`, `error`), `verdict` (`PASSED`, `BLOCKED`, or null) and `reason_code`.
+- When `status` is `error`, the returned BLOCKED is not a real finding.
+- `POST /runs` returns `429` with a `Retry-After` header (seconds) when a limit is hit. Limits: 5 runs per minute, 30 per hour, 2 at once.
+- Measured on 23 Nov 2026: broken = BLOCKED (`TARGET_NOT_FOCUSABLE`), fixed = PASSED, scripted mode.
 
-### Cross-cutting invariants (from `product-rules.md`)
+### Assumptions
 
-These apply to every requirement below and are not repeated per section:
+A1, A2 and A4 are confirmed by the user. A3 is closed by a decision: the MCP server uses the official `mcp` Python package.
 
-- **Verdict authority:** The deterministic checker decides every `verdict` and `reason_code`. No AI component, no Crew agent, no reporting code overrides or fabricates these values. The nightly script reads verdicts from the API; it never computes them.
-- **No invented metrics:** Any value not yet measured renders as `--` or is omitted. Empty history shows "No runs yet", never placeholder rows.
-- **`agent_mode` always present:** Every evidence log row and every history API response includes `agent_mode`.
-- **No auto-mutation:** No component opens a PR, modifies source files, or pushes commits. Regressions are reported; fixes require human action.
-- **Budget guard:** The Crew agent step (regression summary) only runs when at least one regression is detected. If all journeys pass, no agent session is created and no Bedrock tokens are spent.
-
----
+- A1 (confirmed by the user): The manifest `night_watch/app.json` uses the field names and shapes described in Requirement 9.
+- A2 (confirmed by the user): The skill is a folder at `night_watch/skills/night-watch-report/` that contains `SKILL.md`.
+- A3 (decision): The MCP_Server is built with the official `mcp` Python package (FastMCP, stdio transport). The package handles JSON-RPC framing, the protocol handshake and protocol errors.
+- A4 (confirmed by the user): A broken variant that returns PASSED is classed as "could not check" (exit code 2) with the explanation "Broken variant no longer blocks: the checker or test page changed". It is not a returning ghost, because the scope defines a returning ghost only for the fixed variant.
+- A5: Timing defaults are a poll interval of 2 seconds, a per-run timeout of 120 seconds, and at most 3 retries after a 429 response.
+- A6: Exit code priority is 1, then 2, then 0.
 
-## Existing code
+## Glossary
 
-Scope for this build: scripted Send Payment only, broken must be BLOCKED, fixed must be PASSED. Exit codes 0 (all as expected), 1 (returning ghost), 2 (could not check). Reports go to `reports/YYYY-MM-DD.md` and `.json`. Out of scope: dashboard page, UI build, any change to the haunted-audit repo.
+- **Night_Watch**: The nightly check, made up of the Runner, the MCP_Server, the Reporter and the Crew_App.
+- **Runner**: The script `night_watch/run_journeys.py` that starts runs, polls them, and decides outcomes.
+- **Haunted_Audit_API**: The HTTP service that runs journeys and returns verdicts. Night Watch only reads from it and starts runs on it.
+- **API_URL**: The base URL of the Haunted_Audit_API, read from the environment variable `HA_API_URL`, default `http://127.0.0.1:8000`.
+- **Journey**: A named user task checked by the Haunted_Audit_API. Night Watch checks only Send Payment.
+- **Variant**: Either `broken` (planted barrier present) or `fixed` (barrier removed).
+- **Scripted_Mode**: The Haunted_Audit_API mode `scripted`, where a fixed script drives the journey. No AI model chooses the steps.
+- **Run**: One execution of one variant, identified by a `run_id`.
+- **Finished_Run**: A Run whose `status` is `complete`.
+- **Errored_Run**: A Run whose `status` is `error`.
+- **Verdict**: The `verdict` field of a Finished_Run, either `PASSED` or `BLOCKED`.
+- **Expected_Outcome**: BLOCKED for the broken Variant, PASSED for the fixed Variant.
+- **Returning_Ghost**: A Finished_Run of the fixed Variant whose Verdict is not PASSED.
+- **Could_Not_Check**: A Variant for which Night_Watch has no trustworthy Verdict. Causes: Errored_Run, HTTP 429 that cannot be resolved by retrying, API unreachable, timeout, an unexpected response, or a broken Variant returning PASSED (assumption A4), which carries the explanation "Broken variant no longer blocks: the checker or test page changed".
+- **Night_Report**: The pair of files `reports/YYYY-MM-DD.md` and `reports/YYYY-MM-DD.json`, where the date is the UTC date of the check.
+- **MCP_Server**: The FastMCP stdio server `night_watch/mcp_server.py`, built on the official `mcp` Python package.
+- **Crew_App**: The Kiro Crew application defined by `night_watch/app.json`.
+- **Agent_File**: The JSON file `night_watch/report_agent/agent.json` that defines the Report_Agent and is listed in the `agents` field of `night_watch/app.json`.
+- **Report_Agent**: The Crew_App agent defined by the Agent_File, whose instructions are in `night_watch/report_agent/prompt.md`.
+- **Report_Skill**: The skill folder `night_watch/skills/night-watch-report/`, which contains a `SKILL.md` file that tells the Report_Agent how to present results.
+- **Fake_API**: An in-process test double for the Haunted_Audit_API. It opens no network connection.
 
-| File | Does now | Missing against scope |
-|---|---|---|
-| `night_watch/run_journeys.py` | Module docstring only. | Everything: read `HA_API_URL` (default `http://127.0.0.1:8000`); `POST /runs` then poll `GET /runs/{id}` for broken and fixed scripted; clean timeout; wait between runs for the rate limit (5/min, 30/hour, 2 concurrent); write plain-English `.md` and `.json` to `reports/`; fixed not PASSED = "returning ghost"; status `error` or HTTP 429 (honour `Retry-After`) or API down = "could not check"; exit 0/1/2. |
-| `night_watch/mcp_server.py` | Does not exist. | Tiny stdio MCP server with one tool `run_night_watch` that runs the script and returns the summary. |
-| `night_watch/app.json` | `{}` only. | `name` night-watch, `displayName` "Night Watch", `version` 0.1.0, `license` MIT, agent (model auto), skill, `mcpServers`, one cron `0 2 * * *`. Agent calls `run_night_watch`; all pass = one-line reply; returning ghost = short plain-English summary per `report_agent/prompt.md`. |
-| `night_watch/report_agent/prompt.md` | A heading only. | Plain-English returning-ghost summary instructions. |
-| `night_watch/skills/night-watch-report/SKILL.md` | Does not exist (path to confirm). | The skill file. |
-| `night_watch/tests/test_run_journeys.py` | Docstring only. | pytest + Hypothesis tests against a fake API, no network: pass, returning ghost, API down, timeout, 429. Run with the existing `.venv` (Python 3.13). |
-| `night_watch/README.md` | Exists; not read. | Unknown until read. |
-| `reports/` | Does not exist. | Created by the script at run time. |
-| `docs/api-contract.md` | `POST /runs` (202, `run_id`); `GET /runs/{id}` (status running/complete/error, verdict PASSED/BLOCKED/null, `reason_code`); 429 with `Retry-After`. Status `error` returns a meaningless BLOCKED. | Nothing. The script must check `status` before trusting `verdict`. |
+## Requirements
 
-### Open questions (Kiro Crew manifest)
+### Requirement 1: Read configuration
 
-- Exact `app.json` field names and shape for `agent`, `skill`, `mcpServers` and `cron` are unconfirmed.
-- Whether the skill lives at `night_watch/skills/night-watch-report/SKILL.md` or elsewhere is unconfirmed.
-- How the cron entry names its prompt and whether it needs a name field are unconfirmed.
+**User Story:** As a maintainer, I want the API address to come from the environment, so that Night Watch runs on any machine without code changes.
 
-## Conflicts with scope (user decision needed, not resolved here)
+#### Acceptance Criteria
 
-- REQ-LOG-01..03: SQLite `night_watch` evidence log is not in scope; scope writes files under `reports/`.
-- REQ-API-01..04: `GET /night-watch/history` changes the haunted-audit backend, which is out of scope.
-- REQ-UI-01..05: Reports page Night Watch section is a UI build, out of scope.
-- REQ-SCRIPT-01: runs 4 journeys including `llm` mode; scope is scripted only.
-- REQ-SCRIPT-02/03 and others: "regression" naming; scope uses "returning ghost".
-- REQ-SCRIPT-02: broken variant returning PASSED counts as regression; scope only requires broken to be BLOCKED, so the handling is undecided.
-- REQ-SCRIPT-03/06: exit codes 0/1 only and infra failure exits 0; scope uses 0/1/2 with 2 for could not check.
-- REQ-SCRIPT-03: JSON summary schema differs from scope's `reports/*.json` (no schema given in scope).
-- REQ-AGENT-04: reports go to `data/night_watch_reports/`; scope uses `reports/`.
-- REQ-CREW-01/02/03: cron prompt wording differs from scope (agent calls `run_night_watch`, one-line reply when all pass).
-- REQ-AGENT-01..04: separate regression-summary agent with git diff and `list_regression_tests`; scope uses one agent plus `report_agent/prompt.md`.
-- REQ-DOCKER-01: Docker README section is not in scope.
-- REQ-UI-05 vs product rule: axe-core "WCAG 2.1 AA zero violations" wording conflicts with "never claim WCAG compliance".
-- REQ-TEST-01/02: tests cover the evidence log, dry-run and the backend endpoint; scope lists pass, returning ghost, API down, timeout, 429 with Hypothesis.
+1. WHEN the Runner starts, THE Runner SHALL read the API_URL from the environment variable `HA_API_URL`.
+2. IF `HA_API_URL` is not set, is an empty string, or contains only whitespace characters, THEN THE Runner SHALL use `http://127.0.0.1:8000` as the API_URL.
+3. WHEN the API_URL has one or more trailing slashes after leading and trailing whitespace is removed, THE Runner SHALL remove all trailing slashes and the surrounding whitespace before building request URLs, so that no request URL contains a double slash after the host.
+4. IF the API_URL does not begin with `http://` or `https://`, THEN THE Runner SHALL stop before sending any request, SHALL exit with exit code 2, and SHALL print a plain-English error message that names `HA_API_URL` as invalid and states that it must begin with `http://` or `https://`.
+5. THE Runner SHALL contain no credentials, tokens, or real user data in its source files, default values, or output.
+6. THE Runner SHALL build file paths with `pathlib` so that the same code runs on Windows and Linux without changes.
 
----
+### Requirement 2: Run the two scripted variants
 
-## REQ-SCRIPT — Nightly Run Script (`night_watch/run_journeys.py`)
+**User Story:** As a maintainer, I want the broken and fixed Send Payment variants run each night, so that I can see whether the planted barrier and its fix still behave as expected.
 
-### REQ-SCRIPT-01 · Journeys executed
+#### Acceptance Criteria
 
-**THE SYSTEM SHALL** run the Send Payment journey against the demo bank (`/bank`) in this fixed order:
-1. `send-payment` / `variant=broken` / `mode=scripted`
-2. `send-payment` / `variant=fixed` / `mode=scripted`
-3. `send-payment` / `variant=broken` / `mode=llm` (skipped if AWS credentials absent)
-4. `send-payment` / `variant=fixed` / `mode=llm` (skipped if AWS credentials absent)
+1. WHEN the Runner is started, THE Runner SHALL send `POST /runs` with the body `{"variant": "broken", "mode": "scripted"}` and then `POST /runs` with the body `{"variant": "fixed", "mode": "scripted"}`, in that order.
+2. THE Runner SHALL send only the fields `variant` and `mode` in each `POST /runs` body.
+3. THE Runner SHALL send the second `POST /runs` only after the first Run has reached the status `complete` or `error`, or has been classified as Could_Not_Check, so that at most one Run is in progress at any time.
+4. WHEN the `POST /runs` response status is `202`, THE Runner SHALL read `run_id` from the response and poll `GET /runs/{run_id}`.
+5. WHILE the `status` field of a Run is neither `complete` nor `error`, THE Runner SHALL poll `GET /runs/{run_id}` every 2 seconds (plus or minus 0.5 seconds), and SHALL stop polling that Run as soon as `status` is `complete` or `error`.
+6. WHEN the broken Run has reached the status `complete` or `error`, or has been classified as Could_Not_Check, THE Runner SHALL start the fixed Run.
+7. IF a `POST /runs` request returns a status other than `202`, returns a `202` response without a `run_id`, or fails to connect or to receive a response within 10 seconds, THEN THE Runner SHALL classify that Variant as Could_Not_Check with a plain-English reason, SHALL NOT poll for that Variant, and SHALL continue with the next step (starting the fixed Run if the broken Variant was affected), except where Requirement 5 or Requirement 6 says otherwise.
+8. IF a Run's `status` is not `complete` or `error` within 120 seconds of its `POST /runs` being accepted, or a `GET /runs/{run_id}` poll fails 3 times in a row, THEN THE Runner SHALL stop polling that Run, SHALL classify that Variant as Could_Not_Check with a plain-English reason, and SHALL keep the results already collected for the other Variant.
 
-**THE SYSTEM SHALL** run journeys sequentially, not concurrently, to avoid port conflicts or browser resource contention.
+### Requirement 3: Check status before trusting the verdict
 
-**THE SYSTEM SHALL** treat Send Payment as the primary journey. Additional journeys may be added in future by extending the `JOURNEY_MANIFEST` list in the script.
+**User Story:** As a maintainer, I want a crashed run never to be read as a real finding, so that reports contain only trustworthy verdicts.
 
-### REQ-SCRIPT-02 · Pass/fail determination
+#### Acceptance Criteria
 
-**THE SYSTEM SHALL** determine pass/fail from the `verdict` field of `JourneyResult` returned by `GET /runs/{id}`. No other field is used for pass/fail.
+1. WHILE the `status` of a Run is `running`, THE Runner SHALL ignore the `verdict` field of that Run and SHALL NOT record a Verdict for the Variant until `status` changes.
+2. WHEN the `status` of a Run is `error`, THE Runner SHALL classify that Variant as Could_Not_Check, SHALL ignore the `verdict` field, and SHALL include the Variant name and the `status` value in the Could_Not_Check entry.
+3. WHEN the `status` of a Run is `complete` and `verdict` is exactly `PASSED` or exactly `BLOCKED` (case-sensitive), THE Runner SHALL record that Verdict, unchanged, for the Variant.
+4. IF the `status` of a Run is `complete` and `verdict` is absent, null, an empty string, or any value other than exactly `PASSED` or `BLOCKED`, THEN THE Runner SHALL classify that Variant as Could_Not_Check, SHALL NOT record a Verdict, and SHALL include the Variant name and the received `verdict` value in the Could_Not_Check entry.
+5. IF the `status` of a Run is absent, null, or any value other than exactly `running`, `complete` or `error`, THEN THE Runner SHALL classify that Variant as Could_Not_Check, SHALL ignore the `verdict` field, and SHALL include the Variant name and the received `status` value in the Could_Not_Check entry.
+6. THE Runner SHALL take every Verdict and `reason_code` from the Haunted_Audit_API response and SHALL NOT compute or alter either value.
+7. IF a Variant is classified as Could_Not_Check, THEN THE Runner SHALL continue checking the remaining Variants and SHALL NOT report that Variant as a "returning ghost" or as a passing or failing result.
 
-**THE SYSTEM SHALL** classify a run as a **regression** only when:
-- `variant == "fixed"` AND `verdict == "BLOCKED"` (a journey that should pass is now failing)
-- OR `variant == "broken"` AND `verdict == "PASSED"` (the barrier we deliberately planted is now absent)
+### Requirement 4: Judge each variant against its expected outcome
 
-**THE SYSTEM SHALL NEVER** classify an `llm`-mode run as a regression if AWS credentials were absent (`run.error` contains the credential error string). Unexecuted runs are recorded as `skipped`, not regressions.
+**User Story:** As a maintainer, I want the fixed variant failing to be called a returning ghost, so that a regression is obvious.
 
-**THE SYSTEM SHALL** classify a run as an **infrastructure failure** when the FastAPI backend is unreachable (connection refused, DNS failure, or HTTP 5xx on `POST /runs` or `GET /runs/{id}`). Infrastructure failures are distinct from regressions in the evidence log.
+#### Acceptance Criteria
 
-### REQ-SCRIPT-03 · JSON summary output
+1. WHEN the broken Variant has a Finished_Run with Verdict BLOCKED, THE Runner SHALL mark the broken Variant as "as expected".
+2. WHEN the fixed Variant has a Finished_Run with Verdict PASSED, THE Runner SHALL mark the fixed Variant as "as expected".
+3. WHEN the fixed Variant has a Finished_Run with Verdict BLOCKED, THE Runner SHALL mark the fixed Variant as a Returning_Ghost and SHALL record the `reason_code` from the response exactly as received, or record "no reason given" if the response has no `reason_code` or its value is empty.
+4. WHEN the broken Variant has a Finished_Run with Verdict PASSED, THE Runner SHALL classify the broken Variant as Could_Not_Check with the explanation exactly "Broken variant no longer blocks: the checker or test page changed", SHALL NOT mark it as a Returning_Ghost, and the invocation SHALL end with exit code 2 unless a Returning_Ghost exists (assumption A4).
+5. IF a Finished_Run has a Verdict other than BLOCKED or PASSED, THEN THE Runner SHALL classify that Variant as Could_Not_Check, with an explanation naming the unrecognised Verdict value, and SHALL NOT mark it as "as expected" or as a Returning_Ghost.
+6. WHEN both Variants have been judged, THE Runner SHALL keep each Variant's judgement independent, so that a Could_Not_Check result for one Variant does not change the judgement of the other Variant.
 
-**THE SYSTEM SHALL** print to stdout a single JSON object on exit:
+### Requirement 5: Handle rate limits
 
-```json
-{
-  "night_watch_at": "ISO-8601 UTC timestamp",
-  "runs": [
-    {
-      "journey_id":   "send-payment",
-      "variant":      "broken|fixed",
-      "agent_mode":   "scripted|llm",
-      "run_id":       "uuid|null",
-      "verdict":      "PASSED|BLOCKED|null",
-      "reason_code":  "string|null",
-      "status":       "pass|fail|regression|skipped|infra_failure",
-      "latency_ms":   "number|null",
-      "tokens":       { "input": 0, "output": 0, "total": 0 },
-      "cost_usd":     "number|null",
-      "error":        "string|null"
-    }
-  ],
-  "regressions":  "integer — count of regression-status runs",
-  "failures":     "integer — count of fail + infra_failure status runs",
-  "skipped":      "integer — count of skipped runs",
-  "exit_code":    "0|1"
-}
-```
+**User Story:** As a maintainer, I want Night Watch to stay inside the API limits, so that it never gets blocked or blocks other users.
 
-**THE SYSTEM SHALL** exit with code `1` if `regressions > 0`. Exit `0` otherwise (including when only infrastructure failures or skipped runs occurred).
+#### Acceptance Criteria
 
-**THE SYSTEM SHALL** produce identical output structure regardless of whether runs pass, fail, regress, or are skipped, so downstream consumers can parse it unconditionally.
+1. WHEN `POST /runs` returns HTTP 429 and the `Retry-After` header is a whole number of seconds from 0 to 120, THE Runner SHALL wait that many seconds and then repeat the same `POST /runs` for the same Variant.
+2. IF `POST /runs` returns HTTP 429 for the 4th time for the same Variant in one invocation, THEN THE Runner SHALL stop retrying that Variant, classify it as Could_Not_Check, and record in the Night_Report that the rate-limit retry limit of 3 retries was reached.
+3. IF `POST /runs` returns HTTP 429 and the `Retry-After` header is missing, is not a whole number, is negative, or is greater than 120, THEN THE Runner SHALL NOT wait or retry, SHALL classify that Variant as Could_Not_Check, and SHALL record in the Night_Report that the `Retry-After` value was unusable.
+4. THE Runner SHALL start no more than 2 Runs in one invocation, which is below the limits of 5 Runs per minute, 30 Runs per hour and 2 concurrent Runs.
+5. WHEN the Runner waits for a `Retry-After` delay, THE Runner SHALL record in the Night_Report the Variant, the wait length in seconds, and the retry number (1 to 3).
+6. IF a Variant is classified as Could_Not_Check because of rate limiting, THEN THE Runner SHALL still attempt the other Variant and SHALL NOT report a returning ghost for the affected Variant.
 
-### REQ-SCRIPT-04 · Dry-run mode
-
-**THE SYSTEM SHALL** support a `--dry-run` flag. In dry-run mode:
-- No `POST /runs` calls are made.
-- No evidence log writes occur.
-- The script prints a JSON summary with `status: "skipped"` for every run.
-- The script exits 0.
-
-**WHEN** `--dry-run` is active **THE SYSTEM SHALL** print `"dry_run": true` in the summary JSON.
-
-### REQ-SCRIPT-05 · Idempotency
-
-**THE SYSTEM SHALL** be idempotent: running the script twice in the same UTC day does not duplicate evidence log rows. Before inserting a row, the script checks for an existing row with the same `(run_date, journey_id, variant, agent_mode)` tuple and skips the insert if found.
-
-**THE SYSTEM SHALL** use the current UTC date (`datetime.now(timezone.utc).date().isoformat()`) as `run_date`, not a local timezone date.
-
-### REQ-SCRIPT-06 · Backend-down handling
-
-**WHEN** the FastAPI backend is unreachable **THE SYSTEM SHALL**:
-1. Record one `infra_failure` entry per planned journey (not per HTTP call).
-2. Set `error` to a short human-readable string: `"Backend unreachable: {exception_class}: {message}"`.
-3. Print the JSON summary with all runs having `status: "infra_failure"`.
-4. Exit `0` (infrastructure failures are not regressions and must not page the on-call).
-
-**THE SYSTEM SHALL** write infrastructure failure rows to the evidence log so the history table shows the outage.
-
-### REQ-SCRIPT-07 · LLM credential handling
-
-**THE SYSTEM SHALL** attempt to detect AWS credentials before starting any `llm`-mode run by calling the same `_require_boto_session` check used in `agent/keyboard_agent/agent.py`.
-
-**WHEN** credentials are absent **THE SYSTEM SHALL** record `status: "skipped"` with `error: "AWS credentials not configured"` for every `llm`-mode run and proceed to the next journey.
-
-**THE SYSTEM SHALL** log a single credential-missing warning to `stderr` before the first skipped `llm` run, not once per journey.
-
----
+### Requirement 6: Handle API failures and timeouts
 
-## REQ-LOG — Evidence Log
+**User Story:** As a maintainer, I want an unreachable or slow API to be reported as "could not check", so that an outage is never mistaken for a pass or a returning ghost.
 
-### REQ-LOG-01 · Schema
+#### Acceptance Criteria
 
-**THE SYSTEM SHALL** maintain a `night_watch` table in the existing SQLite database at `HAUNTED_AUDIT_DB` (default `data/runs.db`). The schema:
-
-```sql
-CREATE TABLE IF NOT EXISTS night_watch (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_date      TEXT NOT NULL,          -- UTC date: YYYY-MM-DD
-    run_id        TEXT,                   -- FastAPI run UUID, null for skipped/infra
-    journey_id    TEXT NOT NULL,          -- e.g. "send-payment"
-    variant       TEXT NOT NULL,          -- "broken" | "fixed"
-    agent_mode    TEXT NOT NULL,          -- "scripted" | "llm"
-    verdict       TEXT,                   -- "PASSED" | "BLOCKED" | null
-    reason_code   TEXT,                   -- nullable
-    status        TEXT NOT NULL,          -- "pass" | "fail" | "regression" | "skipped" | "infra_failure"
-    input_tokens  INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens  INTEGER NOT NULL DEFAULT 0,
-    cost_usd      REAL NOT NULL DEFAULT 0.0,
-    latency_ms    REAL,                   -- null for skipped/infra
-    error_message TEXT,                   -- null unless status is skipped/infra_failure/fail
-    created_at    TEXT NOT NULL           -- ISO-8601 UTC timestamp of the write
-);
-CREATE INDEX IF NOT EXISTS ix_night_watch_date ON night_watch(run_date);
-```
-
-**THE SYSTEM SHALL** create the table (and index) on first write if it does not exist, without dropping or modifying existing tables. This is a non-destructive `CREATE TABLE IF NOT EXISTS` only.
-
-**THE SYSTEM SHALL** never delete rows from `night_watch`. The log is append-only.
-
-### REQ-LOG-02 · Write timing
-
-**THE SYSTEM SHALL** write each row immediately after its journey completes (or is determined skipped/infra), not in a batch at the end. If the script crashes mid-run, rows for completed journeys are still persisted.
-
-### REQ-LOG-03 · Token and cost fields
-
-**THE SYSTEM SHALL** record `input_tokens`, `output_tokens`, `total_tokens`, and `cost_usd` from `JourneyResult.tokens` and `JourneyResult.cost_usd`.
-
-**THE SYSTEM SHALL** record `0` for all token fields when `agent_mode == "scripted"` (as per product-rules.md §Agent Mode Contract). It NEVER records `null` for token fields.
-
----
-
-## REQ-API — Backend Endpoint (`GET /night-watch/history`)
-
-### REQ-API-01 · Endpoint definition
-
-**THE SYSTEM SHALL** add `GET /night-watch/history` to the FastAPI application in `agent/api/main.py`.
-
-**Response schema:**
-```json
-{
-  "rows": [
-    {
-      "id":           "integer",
-      "run_date":     "YYYY-MM-DD",
-      "run_id":       "string|null",
-      "journey_id":   "string",
-      "variant":      "string",
-      "agent_mode":   "string",
-      "verdict":      "string|null",
-      "reason_code":  "string|null",
-      "status":       "string",
-      "input_tokens": "integer",
-      "output_tokens": "integer",
-      "total_tokens": "integer",
-      "cost_usd":     "number",
-      "latency_ms":   "number|null",
-      "error_message": "string|null",
-      "created_at":   "string"
-    }
-  ],
-  "count": "integer"
-}
-```
-
-### REQ-API-02 · Query parameters
-
-**THE SYSTEM SHALL** support these optional query parameters:
-- `limit` (integer, default 100, max 500): number of rows to return.
-- `offset` (integer, default 0): pagination offset.
-- `status` (string): filter by status value.
-- `journey_id` (string): filter by journey.
-- `since` (string, YYYY-MM-DD): return only rows with `run_date >= since`.
-
-### REQ-API-03 · Ordering
-
-**THE SYSTEM SHALL** return rows ordered by `run_date DESC`, `id DESC` (newest first).
-
-### REQ-API-04 · Empty history
-
-**WHEN** the `night_watch` table is empty or no rows match the filters **THE SYSTEM SHALL** return `{ "rows": [], "count": 0 }`. It NEVER returns fabricated rows.
-
----
-
-## REQ-UI — Reports Page Night Watch Section
-
-### REQ-UI-01 · History table
-
-**THE SYSTEM SHALL** add a "Night Watch" section to the Reports page (`/reports`) that displays the history table fetched from `GET /night-watch/history`.
-
-**THE SYSTEM SHALL** render the table with these columns: Date, Journey, Variant, Mode, Verdict, Status, Steps / Tokens, Cost, Latency.
-
-**THE SYSTEM SHALL** render `agent_mode` as a badge next to every row's Mode cell (consistent with product-rules.md §Metrics and Rendering).
-
-### REQ-UI-02 · Status colours and icons
-
-**THE SYSTEM SHALL** render each status with an icon AND a text label (never colour alone, WCAG 1.4.1):
-- `pass` — green check icon, "Pass"
-- `regression` — red × icon, "Regression"
-- `fail` — red × icon, "Fail"
-- `skipped` — grey dash icon, "Skipped"
-- `infra_failure` — amber ⚠ icon, "Infra failure"
-
-### REQ-UI-03 · Empty state
-
-**WHEN** `count === 0` **THE SYSTEM SHALL** render "No runs yet" inside the table area. No placeholder rows, no skeleton rows with fake data.
-
-### REQ-UI-04 · Loading and error states
-
-**WHILE** the history fetch is in flight **THE SYSTEM SHALL** render a skeleton matching the table shape.
-
-**WHEN** `GET /night-watch/history` returns a non-200 response **THE SYSTEM SHALL** render an error state with the HTTP status code and a "Retry" button.
-
-### REQ-UI-05 · Accessibility
-
-**THE SYSTEM SHALL** render the history table as a semantic `<table>` with `<thead>` and `<tbody>`, a `<caption>` of "Night Watch run history", and `scope="col"` on every `<th>`.
-
-**THE SYSTEM SHALL** pass axe-core WCAG 2.1 AA scan with zero violations on the Reports page.
-
----
-
-## REQ-CREW — Kiro Crew Registration
-
-### REQ-CREW-01 · Cron job
-
-**THE SYSTEM SHALL** register a Kiro Crew cron job named `night-watch` that fires daily at 02:00 UTC (`0 2 * * *`).
-
-**THE SYSTEM SHALL** declare the cron job inside the Night Watch Kiro Crew App manifest (`night_watch/app.json`) so the schedule is version-controlled and reproducible.
-
-**THE SYSTEM SHALL** define the cron job's prompt as:
-> "Run the Night Watch nightly journey check: execute `python night_watch/run_journeys.py` in the workspace, capture its JSON output, and if `regressions > 0`, activate the regression-summary agent with the JSON as input."
-
-### REQ-CREW-02 · Budget guard in prompt
-
-**THE SYSTEM SHALL** include in the cron prompt: "If `regressions == 0`, do not activate the regression-summary agent. Exit immediately after logging the summary. Only spend agent tokens when a regression is detected."
-
-### REQ-CREW-03 · No auto-mutation
-
-**THE SYSTEM SHALL** include in the cron prompt: "Do not open pull requests, do not modify source files, do not push commits. Report only."
-
----
-
-## REQ-AGENT — Regression Summary Agent
-
-### REQ-AGENT-01 · Trigger condition
-
-**THE SYSTEM SHALL** define the regression summary agent in `night_watch/report_agent/prompt.md`.
-
-**THE SYSTEM SHALL** activate the agent only when `regressions > 0` in the JSON summary from `run_journeys.py`.
-
-### REQ-AGENT-02 · Report content
-
-**THE SYSTEM SHALL** instruct the agent to write a plain-English report containing:
-1. Which journey regressed (journey_id, variant, agent_mode).
-2. The blocked element: `blocked_element.selector`, `blocked_element.tag`, `blocked_element.accessible_name`.
-3. The reason code and its meaning in plain English (not a code dump).
-4. The diff between the current state and the last green run — the agent should check `git log` and `git diff` for changes since the last `pass` row in the evidence log for this journey.
-5. Which regression test (if any from `list_regression_tests`) has a `last_result == "BLOCKED"`.
-6. A one-paragraph summary suitable for a Slack message.
-
-### REQ-AGENT-03 · Constraints in the prompt
-
-**THE SYSTEM SHALL** include these constraints verbatim in `prompt.md`:
-- "The checker, not you, decided the verdict. Do not second-guess or re-evaluate the verdict."
-- "Do not modify source files. Do not open pull requests. Do not run fix tools."
-- "If `blocked_element` is null, state that the element data was unavailable and describe what `reason_code` indicates."
-- "Every fact in this report comes from the JSON input. Do not invent blocked element names, selectors, or WCAG criteria."
-
-### REQ-AGENT-04 · Output format
-
-**THE SYSTEM SHALL** instruct the agent to produce a Markdown report saved to `data/night_watch_reports/YYYY-MM-DD.md`, appending if the file already exists.
-
-**THE SYSTEM SHALL** include "Built with Kiro" as plain text at the end of every report.
-
----
-
-## REQ-DOCKER — Always-On Option
-
-### REQ-DOCKER-01 · Documentation
-
-**THE SYSTEM SHALL** include a "Running 24/7 with Docker" section in `night_watch/README.md` that describes:
-1. Using the official Kiro Crew Docker image (`ghcr.io/kirodotdev/kirocrew:stable`) so nightly runs are not missed when the laptop is off.
-2. Mounting the workspace directory into the container so `run_journeys.py` can reach the project files and SQLite database.
-3. Mounting a `kirocrew-home` volume for persistent Crew state (memory, cron registrations).
-4. The exact `docker run` command with `--name`, `-p`, `-v` flags.
-5. A note that the FastAPI backend must also be accessible from within the container (either run inside the same Docker network or expose it on a non-loopback address).
-
----
-
-## REQ-TEST — Tests
-
-### REQ-TEST-01 · Unit tests for `run_journeys.py`
-
-**THE SYSTEM SHALL** have unit tests in `night_watch/tests/test_run_journeys.py` that mock all HTTP calls and database writes. Tests cover:
-- Happy path: two scripted runs pass → summary has `regressions: 0`, `exit_code: 0`.
-- Regression detected: fixed variant returns BLOCKED → summary has `regressions: 1`, `exit_code: 1`.
-- Infrastructure failure: all HTTP calls raise `ConnectionError` → all statuses are `infra_failure`, `exit_code: 0`.
-- Dry-run mode: no HTTP calls made, no DB writes, exit 0.
-- Idempotency: calling `_write_evidence_row` twice with same date/journey/variant/mode → second call is a no-op.
-- LLM skip: credentials absent → llm runs have `status: "skipped"`, scripted runs still execute.
-
-### REQ-TEST-02 · Unit tests for the backend endpoint
-
-**THE SYSTEM SHALL** have tests in `agent/tests/test_api.py` (extending the existing test module) that cover:
-- `GET /night-watch/history` with an empty table returns `{ "rows": [], "count": 0 }`.
-- `GET /night-watch/history` with two rows returns them newest-first.
-- `GET /night-watch/history?status=regression` filters correctly.
-- `GET /night-watch/history?since=2026-11-01` filters by date.
-- `GET /night-watch/history?limit=1` returns one row and the correct count.
+1. IF the Haunted_Audit_API refuses the connection, does not resolve, or does not answer an HTTP request within 10 seconds, THEN THE Runner SHALL classify the Variant being checked and every Variant not yet checked as Could_Not_Check, SHALL NOT send further requests to the Haunted_Audit_API in that invocation, and SHALL keep the classifications of Variants already checked unchanged.
+2. IF a Run is not a Finished_Run or Errored_Run within 120 seconds of its `POST /runs` response, THEN THE Runner SHALL stop polling that Run, classify that Variant as Could_Not_Check with the explanation "timed out", and continue to check the next Variant not yet checked.
+3. IF `POST /runs` or `GET /runs/{run_id}` returns an HTTP status of 400 or above other than 429, THEN THE Runner SHALL classify that Variant as Could_Not_Check, record the HTTP status code in the explanation, and continue to check the next Variant not yet checked.
+4. IF a response body is not valid JSON or lacks a required field, THEN THE Runner SHALL classify that Variant as Could_Not_Check, record an explanation naming the invalid body or the missing field, and continue to check the next Variant not yet checked.
+5. IF the Haunted_Audit_API is unreachable while the broken Variant is being started, THEN THE Runner SHALL write a Night_Report that lists both Variants as Could_Not_Check, SHALL NOT report a returning ghost, and SHALL NOT report either Variant as passed.
+6. IF the Runner classifies any Variant as Could_Not_Check and no Returning_Ghost exists, THEN THE Runner SHALL end the invocation with exit code 2 after the Night_Report is written.
+
+### Requirement 7: Exit codes
+
+**User Story:** As a scheduler, I want a distinct exit code for each outcome, so that I can react without parsing the report.
+
+#### Acceptance Criteria
+
+1. WHEN the check completes and both Variants are "as expected" (the broken Variant is BLOCKED and the fixed Variant is PASSED), THE Runner SHALL exit with code 0.
+2. WHEN the check completes and at least one Returning_Ghost exists, THE Runner SHALL exit with code 1, even if the other Variant is Could_Not_Check.
+3. WHEN the check completes, no Returning_Ghost exists, and at least one Variant is Could_Not_Check, THE Runner SHALL exit with code 2.
+4. IF an unexpected exception occurs after the check has started, THEN THE Runner SHALL write a Night_Report that states the exception type and a plain-English description of the failure, SHALL exit with code 2, and SHALL NOT exit with code 0 or 1.
+5. IF the Night_Report cannot be written while the Runner is handling an unexpected exception, THEN THE Runner SHALL still exit with code 2 and SHALL print the exception type to standard error.
+6. THE Runner SHALL exit with exactly one code from the set {0, 1, 2} on every run that reaches the end of the check, and SHALL exit within 5 seconds after the last Variant result is determined.
+
+### Requirement 8: Write the Night_Report
+
+**User Story:** As a maintainer, I want a plain-English report and a machine-readable copy for every night, so that I can read the result and other tools can parse it.
+
+#### Acceptance Criteria
+
+1. WHEN a check ends, THE Runner SHALL write `reports/YYYY-MM-DD.md` and `reports/YYYY-MM-DD.json`, where YYYY-MM-DD is the UTC date of the `checked_at` timestamp.
+2. IF the `reports` directory does not exist, THEN THE Runner SHALL create it before writing either file.
+3. IF the `reports` directory cannot be created or either file cannot be written, THEN THE Runner SHALL print to standard error one line that names the path and states the cause in plain English, and SHALL exit with code 2.
+4. WHEN a Night_Report for the same date already exists, THE Runner SHALL overwrite both files with the latest result, so that after the write neither file contains content from the earlier check.
+5. THE Runner SHALL write a JSON file that contains exactly these fields: `checked_at` (UTC ISO-8601 timestamp ending in `Z`), `api_url` (the value of HA_API_URL or the default), `mode` (the value `scripted`), `journey` (the value `send-payment`), `outcome` (one of `all_as_expected`, `returning_ghost`, `could_not_check`), `exit_code` (integer equal to the exit code of the Runner process), and `variants`.
+6. THE Runner SHALL write in `variants` exactly two entries, one for `broken` and one for `fixed`, each with the fields `variant`, `expected_verdict` (`BLOCKED` for `broken`, `PASSED` for `fixed`), `run_id` (string or null), `status` (string or null), `verdict` (string or null), `reason_code` (string or null), `result` (one of `as_expected`, `returning_ghost`, `could_not_check`), and `explanation` (plain English, 1 to 500 characters).
+7. WHEN a Returning_Ghost exists, THE Runner SHALL write in the Markdown file at least one sentence that contains the words "returning ghost", names the `fixed` variant, and states the `reason_code` value together with a plain-English description of it.
+8. WHEN a Variant is Could_Not_Check, THE Runner SHALL write in the Markdown file the name of that Variant and its cause in plain English, and SHALL set that entry's `result` to `could_not_check`.
+9. THE Runner SHALL include the words "scripted mode" in the Markdown file and SHALL set the JSON `mode` field to `scripted`, and SHALL state in the Markdown file that scripted mode follows a fixed script and does not use an AI model to drive the journey.
+10. THE Runner SHALL NOT write the text "WCAG" together with the words "compliant", "compliance", "conformant", or "conformance" in any Night_Report.
+11. WHEN both report files have been written, THE Runner SHALL print to standard output exactly one summary line that contains the `outcome` value and the path of the Markdown file.
+12. FOR ALL valid result sets, writing the JSON file and then reading it back SHALL produce a result set equal to the original (round-trip property), including null values and non-ASCII characters in `explanation`.
+
+### Requirement 9: Register the app with Kiro Crew
+
+**User Story:** As a maintainer, I want the app described in one manifest, so that Kiro Crew can schedule it each night.
+
+#### Acceptance Criteria
+
+1. THE Crew_App SHALL define in `night_watch/app.json` the fields `name` with the value `night-watch`, `displayName` with the value `Night Watch`, `version` with the value `0.1.0`, `license` with the value `MIT`, `description`, and `author`.
+2. THE `night_watch/app.json` file SHALL contain only these top-level fields: `name`, `version`, `displayName`, `description`, `author`, `license`, `agents`, `skills`, `mcpServers` and `crons`.
+3. THE `agents` field SHALL be a list with exactly one path, which points to the Agent_File, with the path resolved relative to the `night_watch/` folder (the app folder installed in Crew), so the path is `report_agent/agent.json`.
+4. THE Agent_File SHALL contain only the fields `name`, `model`, `description`, `prompt` and `tools`, SHALL set `model` to `auto`, and SHALL hold the full text of `night_watch/report_agent/prompt.md` inline in `prompt`.
+5. THE `skills` field SHALL be a list with exactly one path, which points to the Report_Skill folder (`skills/night-watch-report`, relative to the `night_watch/` folder), and that folder SHALL contain a `SKILL.md` file whose frontmatter has the fields `name`, `description` and `triggers`.
+6. THE `mcpServers` field SHALL have the same format as `mcp.json`, with exactly one entry that starts the MCP_Server and defines `command`, `args` and `env`, with `args` set to `mcp_server.py`, relative to the `night_watch/` folder.
+7. THE `crons` field SHALL be a list with exactly one entry that has the fields `name`, `cron_expr`, `message` and `agent`, where `cron_expr` is `0 2 * * *` (02:00 every day) and `agent` refers to the Report_Agent.
+8. THE `message` of the cron entry SHALL instruct the Report_Agent to call the `run_night_watch` tool exactly once per scheduled run.
+9. WHEN the `run_night_watch` tool returns the outcome `all_as_expected`, THE `message` of the cron entry SHALL instruct the Report_Agent to reply with exactly one line of plain text and to take no further action.
+10. WHEN the `run_night_watch` tool returns the outcome `returning_ghost` or `could_not_check`, THE `message` of the cron entry SHALL instruct the Report_Agent to follow `night_watch/report_agent/prompt.md`.
+11. THE `night_watch/app.json` file SHALL parse as valid JSON with no syntax errors.
+12. THE `night_watch/app.json` file and the Agent_File SHALL contain no secrets, no credentials, no real data, and no hard-coded API address, so that the API address is read only from the `HA_API_URL` environment variable.
+
+### Requirement 10: Expose the check through an MCP server
+
+**User Story:** As the Crew agent, I want one tool that runs the check, so that I can trigger it and read the summary.
+
+#### Acceptance Criteria
+
+1. THE MCP_Server SHALL be built with the official `mcp` Python package (FastMCP) and SHALL use the stdio transport, leaving JSON-RPC framing and protocol handling to the package (assumption A3).
+2. THE MCP_Server SHALL be named `night-watch` and SHALL answer the `initialize` handshake through the `mcp` package, with no hand-written protocol code.
+3. THE MCP_Server SHALL register exactly one tool named `run_night_watch`, and that tool SHALL take no arguments.
+4. WHEN the `run_night_watch` tool is called, THE MCP_Server SHALL run the Runner exactly once and return a text summary containing the `outcome`, the `exit_code`, the plain-English explanation for each Variant (broken and fixed), and the path of the Night_Report.
+5. IF the Runner ends with exit code 1 or 2, THEN THE MCP_Server SHALL return the summary as a normal tool result without an error, and SHALL keep the server process running to accept the next request.
+6. IF a `tools/call` request names a tool other than `run_night_watch`, THEN THE `mcp` package SHALL reject it with a protocol error, and the Runner SHALL NOT run.
+7. IF the MCP_Server receives input that is not valid JSON, THEN THE `mcp` package SHALL answer with a parse error, and THE MCP_Server SHALL keep running.
+8. IF the Runner raises an unexpected exception while `run_night_watch` runs, THEN THE MCP_Server SHALL return an error result for that call, and SHALL keep running to accept the next request.
+9. THE MCP_Server SHALL write only JSON-RPC protocol messages to standard output and SHALL write all diagnostic text to standard error.
+
+### Requirement 11: Instruct the report agent
+
+**User Story:** As a maintainer, I want a short plain-English message when something is wrong, so that I can act on it without reading JSON.
+
+#### Acceptance Criteria
+
+1. THE Report_Agent prompt in `night_watch/report_agent/prompt.md` SHALL instruct the agent to call `run_night_watch` exactly once per nightly run and to base every statement in its message on the summary returned by that call.
+2. WHEN the outcome is `returning_ghost`, THE Report_Agent prompt SHALL instruct the agent to write a summary of at most 5 sentences that names the fixed variant, includes the exact words "returning ghost", states the `reason_code` from the summary as a plain-English sentence, and gives the path of the Night_Report file.
+3. WHEN the outcome is `could_not_check`, THE Report_Agent prompt SHALL instruct the agent to write a summary of at most 5 sentences that states the cause given in the summary, names each affected Variant, and states that no Verdict is available for each named Variant.
+4. THE Report_Agent prompt SHALL instruct the agent to accept the checker's Verdict as final and never to re-evaluate, override or reinterpret it.
+5. THE Report_Agent prompt SHALL instruct the agent never to modify source files, open pull requests, push commits or run fix tools.
+6. THE Report_Agent prompt SHALL instruct the agent never to state an element name, selector or reason code that does not appear in the returned summary.
+7. THE Report_Agent prompt SHALL instruct the agent to label every result as "scripted mode" and never to claim WCAG compliance or conformance.
+8. THE `SKILL.md` file of the Report_Skill SHALL repeat the rules in criteria 4 to 7 and SHALL state that all example data is synthetic.
+9. IF the call to `run_night_watch` fails or returns no summary, THEN THE Report_Agent prompt SHALL instruct the agent to report that the check could not be run, to state that no Verdict is available, and not to guess an outcome.
+
+### Requirement 12: Test against a fake API
+
+**User Story:** As a maintainer, I want fast tests that need no network, so that I can trust changes to the Runner.
+
+#### Acceptance Criteria
+
+1. THE test suite in `night_watch/tests/test_run_journeys.py` SHALL use pytest and Hypothesis.
+2. THE test suite SHALL replace all HTTP calls with the Fake_API and SHALL open no network connection, so that every test passes with the host network disabled.
+3. THE test suite SHALL replace sleeping with a recorded fake clock that logs each requested sleep duration in seconds, so that no test waits in real time and each test completes in under 5 seconds of real time.
+4. WHEN the Fake_API returns a Verdict of BLOCKED for the broken Variant and PASSED for the fixed Variant, THE test suite SHALL assert that the Runner exits with code 0.
+5. WHEN the Fake_API returns a Verdict of BLOCKED for the fixed Variant, THE test suite SHALL assert that the Runner exits with code 1 and that the Night_Report Markdown file contains the words "returning ghost".
+6. IF the Fake_API refuses connections, THEN THE test suite SHALL assert that the Runner exits with code 2 and that both Night_Report files (Markdown and JSON) exist after the Runner exits.
+7. IF a Run stays in `running` status for more than 120 seconds of fake clock time, THEN THE test suite SHALL assert that the Runner exits with code 2 and that the fake clock records no more than 120 seconds of total waiting for that Run before the Runner gives up.
+8. WHEN `POST /runs` returns 429 with a `Retry-After` header of N seconds (N between 1 and 60), THE test suite SHALL assert that the fake clock recorded a sleep of exactly N seconds before the next `POST /runs` request, and that the Runner then completes with the second response.
+9. IF a Run has `status` `error` and `verdict` BLOCKED, THEN THE test suite SHALL assert that the Runner ignores the verdict and exits with code 2.
+10. THE test suite SHALL include a Hypothesis property that, FOR ALL combinations of `status`, `verdict` and Variant, a fixed Variant with a Verdict of BLOCKED is a returning ghost (exit code 1), and a fixed Variant with `status` error, HTTP 429, timeout, a null Verdict or any other Verdict is could not check (exit code 2).
+11. THE test suite SHALL include a Hypothesis property that, FOR ALL valid result sets, the JSON round-trip in Requirement 8 holds.
+12. THE test suite SHALL include a small test that calls the `run_night_watch` tool function directly with a runner stub, and asserts the summary text for exit codes 0, 1 and 2, and that a raising stub is reported as an error.
+13. THE test suite SHALL pass when run with the existing `.venv` and the command `pytest night_watch/tests` on both Windows and Linux.
+14. THE test suite SHALL use only synthetic data, with no real credentials, real URLs, or real user records in test code or fixtures.

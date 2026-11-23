@@ -1,4 +1,4 @@
-﻿## API contract for Night Watch
+## API contract for Night Watch
 
 Source: `data-contract.md` and `agent/api/main.py`, `agent/api/limits.py` in the haunted-audit repo (read only).
 
