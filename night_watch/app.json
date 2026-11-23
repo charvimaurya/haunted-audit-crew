@@ -10,7 +10,7 @@
   "mcpServers": {
     "night-watch": {
       "command": "python",
-      "args": ["night_watch/mcp_server.py"],
+      "args": ["mcp_server.py"],
       "env": {}
     }
   },

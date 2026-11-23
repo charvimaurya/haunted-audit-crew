@@ -25,7 +25,7 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
     - Add the constant `BROKEN_STILL_PASSES` with the exact value "Broken variant no longer blocks: the checker or test page changed"
     - _Requirements: 3.3, 4.1, 4.2, 4.4, 8.6_
 
-- [ ] 2. Implement judging and exit codes
+- [x] 2. Implement judging and exit codes
   - [x] 2.1 Implement `night_watch/judge.py`
     - Add `judge()`, `exit_code_for()` and `outcome_for()` exactly as in the design table
     - Check status before verdict. Keep `reason_code` and `verdict` unchanged. Ghost with no reason code records "no reason given"
@@ -33,7 +33,7 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
     - Every explanation is plain English, 1 to 500 characters
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 7.1, 7.2, 7.3_
 
-  - [ ] 2.4 Write property test for exit code and outcome priority (pure part)
+  - [x] 2.4 Write property test for exit code and outcome priority (pure part)
     - File: `night_watch/tests/test_exit_codes.py`
     - **Property 1: Exit code and outcome priority** (Hypothesis test 1 of 2)
     - Cover `exit_code_for` and `outcome_for` over result pairs (1 if any ghost, else 2 if any could_not_check, else 0, always in {0, 1, 2})
@@ -51,7 +51,7 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
 - [x] 4. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 5. Implement the report
+- [x] 5. Implement the report
   - [x] 5.1 Implement `night_watch/report.py`
     - Add `build_report()`, `render_markdown()` and `write_report()` using `pathlib`
     - Report fields exactly as in the design. `checked_at` ends in `Z`. File names come from the UTC date. Create the folder, overwrite both files, write UTF-8 JSON with `ensure_ascii=False`
@@ -66,12 +66,12 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
     - Synthetic data only (run ids like `run-1`, `127.0.0.1` URLs)
     - _Requirements: 12.2, 12.3, 12.14_
 
-  - [ ] 5.5 Write property test for JSON round trip
+  - [x] 5.5 Write property test for JSON round trip
     - File: `night_watch/tests/test_report_roundtrip.py`
     - **Property 2: Report JSON round trip** (Hypothesis test 2 of 2)
     - **Validates: Requirements 8.12, 12.11**
 
-- [ ] 6. Implement the runner
+- [x] 6. Implement the runner
   - [x] 6.1 Implement `run_check()` in `night_watch/run_journeys.py`
     - Inject `ApiClient`, `Clock`, reports folder, API URL and a `now_fn`
     - Check broken then fixed, one at a time. Poll every 2 s up to 120 s total. Stop after three poll failures in a row
@@ -88,7 +88,7 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
     - Add the `if __name__ == "__main__"` entry point using `sys.exit(main())`
     - _Requirements: 1.1, 1.4, 6.6, 7.4, 7.5, 7.6, 8.3, 8.11_
 
-  - [ ] 6.7 Write example tests in `night_watch/tests/test_run_journeys.py`
+  - [x] 6.7 Write example tests in `night_watch/tests/test_run_journeys.py`
     - Cases: broken BLOCKED and fixed PASSED gives exit 0. Fixed BLOCKED gives exit 1 and "returning ghost" in the Markdown. Refused connection gives exit 2 and both files exist. A run stuck in `running` gives exit 2 with at most 120 s of fake sleep. A 429 with `Retry-After: N` sleeps exactly N and then completes. Status `error` with verdict BLOCKED gives exit 2. Broken variant returning PASSED gives exit 2, `could_not_check` for broken, and no returning ghost (4.4, 7.3)
     - Also test: unexpected exception gives exit 2 and a report naming the exception type, report-write failure gives exit 2, invalid `HA_API_URL` (for example `ftp://x` or `localhost:8000`) sends no request, prints an error naming `HA_API_URL` and stating it must begin with `http://` or `https://`, writes no report, and exits with code 2 (1.4), and `main()` prints exactly one summary line
     - Add a parametrized table (not Hypothesis) over fixed-run status and verdict (12.10): exit 1 only for `complete` + `BLOCKED`. Exit 2 for status `error`, an unresolved 429, a timeout, a null verdict or any other verdict. Exit 0 only for `complete` + `PASSED`
@@ -106,8 +106,8 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
 - [x] 7. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 8. Implement the MCP server
-  - [ ] 8.1 Implement `night_watch/mcp_server.py` with the official `mcp` package
+- [x] 8. Implement the MCP server
+  - [x] 8.1 Implement `night_watch/mcp_server.py` with the official `mcp` package
     - Add `mcp` to the project requirements. Create `FastMCP("night-watch")`, register one tool function `run_night_watch()` that takes no arguments, and start it with the stdio transport in `main()`
     - The tool function calls `run_check` once with the real client, clock and config, and returns a text summary with the outcome, exit code, one explanation per variant, and the report path. Exit codes 1 and 2 are normal results. Put summary building in a small helper so a test can call the function directly
     - Write no JSON-RPC, framing, handshake or protocol-error code: the package handles all of it. Print nothing to stdout except through the package. Diagnostics go to stderr
@@ -115,20 +115,20 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
     - Crew runs the server from inside night_watch/ as 'python mcp_server.py', so make that work despite the 'from night_watch...' imports (add the parent folder to sys.path at the top). Replace the old hand-written mcp_server.py completely.
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7, 10.8, 10.9_
 
-  - [ ] 8.5 Write a small MCP test
+  - [x] 8.5 Write a small MCP test
     - File: `night_watch/tests/test_mcp_examples.py`
     - Call the `run_night_watch` tool function directly with a runner stub, with no stdio and no protocol. Check that the summary holds the outcome, exit code, per-variant explanation and report path for stub exit codes 0, 1 and 2, and that a raising stub gives an error without crashing the test
     - _Requirements: 10.4, 10.5, 10.8, 12.12_
 
-- [ ] 9. Add the Kiro Crew app files
-  - [ ] 9.1 Create `night_watch/report_agent/agent.json`
+- [x] 9. Add the Kiro Crew app files
+  - [x] 9.1 Create `night_watch/report_agent/agent.json`
     - Use only these fields: `name` (`report_agent`), `model` (`auto`), `description`, `prompt` and `tools`
     - `prompt` holds the full text of `night_watch/report_agent/prompt.md` inline, copied exactly. `tools` allows only the MCP tool `run_night_watch` (follow the entry format in Kiro Crew's agent examples)
     - The cron entry in `app.json` must use the same `name`. No secrets, no real data and no API address
     - This replaces the earlier version, which pointed at `prompt.md` instead of holding its text
     - _Requirements: 9.3, 9.4, 9.12_
 
-  - [ ] 9.2 Write `night_watch/app.json`
+  - [x] 9.2 Write `night_watch/app.json`
     - `night_watch/` is the app folder installed in Crew, so every path in `app.json` is relative to it
     - Use only these top-level fields: `name` `night-watch`, `version` `0.1.0`, `displayName` `Night Watch`, `description`, `author`, `license` `MIT`, `agents`, `skills`, `mcpServers`, `crons`
     - `agents`: a list with exactly one path, `report_agent/agent.json`
@@ -163,7 +163,7 @@ Only two Hypothesis tests are kept: exit code priority (2.4) and the report JSON
     - `app.json` and `agent.json` contain no API address and no secrets. Prompt and skill contain the required rules and the word "synthetic". Source files contain no `os.path` joins for report paths and no credentials
     - _Requirements: 1.5, 1.6, 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11, 9.12, 11.7, 11.8_
 
-- [ ] 10. Final checkpoint - Ensure all tests pass
+- [x] 10. Final checkpoint - Ensure all tests pass
   - Run `pytest night_watch/tests` with the existing `.venv`. Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

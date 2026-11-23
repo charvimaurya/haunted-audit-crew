@@ -1,4 +1,4 @@
 requests
 pytest
 hypothesis
-mcp
+mcp>=1.2,<2
