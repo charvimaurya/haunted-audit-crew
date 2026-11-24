@@ -9,8 +9,8 @@
   "skills": ["skills/night-watch-report"],
   "mcpServers": {
     "night-watch": {
-      "command": "python",
-      "args": ["mcp_server.py"],
+      "command": "py",
+      "args": ["-3.13", "mcp_server.py"],
       "env": {}
     }
   },

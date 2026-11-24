@@ -10,3 +10,4 @@ build/
 dist/
 reports/*.json
 reports/
+.kiro/settings/mcp.json
