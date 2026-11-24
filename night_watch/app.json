@@ -9,7 +9,7 @@
   "skills": ["skills/night-watch-report"],
   "mcpServers": {
     "night-watch": {
-      "command": "E:\\Hacathon\\haunted-audit-crew\\.venv\\Scripts\\python.exe",
+      "command": "python3",
       "args": ["mcp_server.py"],
       "env": {}
     }
