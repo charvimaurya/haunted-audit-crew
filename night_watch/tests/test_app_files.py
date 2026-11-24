@@ -15,6 +15,7 @@ APP_JSON = APP_DIR / "app.json"
 ALLOWED_APP_FIELDS = {
     "name", "version", "displayName", "description", "author",
     "license", "agents", "skills", "mcpServers", "crons",
+    "permissions",
 }
 ALLOWED_AGENT_FIELDS = {"name", "model", "description", "prompt", "tools"}
 

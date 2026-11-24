@@ -7,3 +7,5 @@ One line per work session: date, what was done, proof.
 - 23 Nov 2026: All Night Watch tasks built in Kiro (spec mode), 93 tests pass, live run against the local API: all_as_expected.
 
 -24 Nov: Kiro chat called our run_night_watch MCP tool against the local API: all_as_expected.
+
+-24 Nov: Night Watch installed and enabled in Kiro Crew (MCP server, agent, skill, nightly cron).

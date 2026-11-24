@@ -41,3 +41,29 @@ def test_raising_stub_gives_error_message_without_crashing():
     assert "could not be run" in summary
     assert "RuntimeError" in summary
     assert "No verdict" in summary
+
+
+def test_works_when_folder_has_another_name(tmp_path):
+    """Copy the app to a folder named "night-watch" and load mcp_server.py from there."""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent
+    dest = tmp_path / "night-watch"
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("tests", "__pycache__", "reports"))
+    code = (
+        "import runpy, sys;"
+        "ns = runpy.run_path(r'%s', run_name='mcp_server_copy');"
+        "import night_watch.config;"
+        "print(sys.modules['night_watch'].__path__[0]);"
+        "print(ns['REPORTS_DIR'])" % (dest / "mcp_server.py")
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    pkg_path, reports = result.stdout.split()
+    assert Path(pkg_path) == dest.resolve()
+    assert Path(reports) == dest.resolve() / "reports"

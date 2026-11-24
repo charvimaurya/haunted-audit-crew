@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
-# Crew runs "python mcp_server.py" from inside night_watch/, so put the
-# project root (the parent folder) on the path before the package imports.
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# Crew may install this folder under any name (e.g. "night-watch"), so
+# register the folder itself as the package "night_watch". Imports like
+# "night_watch.config" then work whatever the folder is called.
+HERE = Path(__file__).resolve().parent
+if "night_watch" not in sys.modules:
+    _pkg = types.ModuleType("night_watch")
+    _pkg.__path__ = [str(HERE)]
+    sys.modules["night_watch"] = _pkg
+
+# Reports are written next to this file.
+REPORTS_DIR = HERE / "reports"
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
@@ -32,7 +39,7 @@ def default_runner() -> str:
 
     api_url = read_api_url()
     code, report, paths = run_check(
-        ApiClient(api_url), _RealClock(), ROOT / "reports", api_url
+        ApiClient(api_url), _RealClock(), REPORTS_DIR, api_url
     )
     return build_summary(code, report, paths[0])
 
