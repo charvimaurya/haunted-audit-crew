@@ -89,8 +89,8 @@ def test_mcp_server_entry(app):
     assert len(servers) == 1
     entry = next(iter(servers.values()))
     assert set(entry) == {"command", "args", "env"}
-    assert entry["command"] == "py"
-    assert entry["args"] == ["-3.13", "mcp_server.py"]
+    assert entry["command"] == r"E:\Hacathon\haunted-audit-crew\.venv\Scripts\python.exe"
+    assert entry["args"] == ["mcp_server.py"]
     assert (APP_DIR / "mcp_server.py").is_file()
 
 
